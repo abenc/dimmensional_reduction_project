@@ -1,0 +1,135 @@
+---
+title: "Untitled"
+output: html_document
+---
+# -2) modules
+```{R}
+library(RCurl) # download https data
+library(ROCR)
+require(ggplot2)
+library(caret)
+library(Metrics)
+```
+
+# -1) telechargement des datasets
+```{R}
+
+urlfile <- 'https://archive.ics.uci.edu/ml/machine-learning-databases/gisette/GISETTE/gisette_train.data' # LES DONNEES
+x <- getURL(urlfile, ssl.verifypeer = FALSE)
+gisetteRaw <- read.table(textConnection(x), sep = '', header = FALSE, stringsAsFactors = FALSE)
+
+urlfile <- "https://archive.ics.uci.edu/ml/machine-learning-databases/gisette/GISETTE/gisette_train.labels" # LES LABELS
+x <- getURL(urlfile, ssl.verifypeer = FALSE)
+g_labels <- read.table(textConnection(x), sep = '', header = FALSE, stringsAsFactors = FALSE)
+
+print(paste(c("lignes","colonnes"),dim(gisetteRaw))) 
+```
+# 0) Fonction d'évaluation AUC
+```{R}
+EvaluateAUC <- function(dfEvaluate) {
+        require(xgboost)
+        require(Metrics)
+        CVs <- 5
+        cvDivider <- floor(nrow(dfEvaluate) / (CVs+1))
+        indexCount <- 1
+        outcomeName <- c('cluster')
+        predictors <- names(dfEvaluate)[!names(dfEvaluate) %in% outcomeName]
+        lsErr <- c()
+        lsAUC <- c()
+        for (cv in seq(1:CVs)) {
+                print(paste('cv',cv))
+                dataTestIndex <- c((cv * cvDivider):(cv * cvDivider + cvDivider))
+                dataTest <- dfEvaluate[dataTestIndex,]
+                dataTrain <- dfEvaluate[-dataTestIndex,]
+                
+                bst <- xgboost(data = as.matrix(dataTrain[,predictors]),
+                               label = dataTrain[,outcomeName],
+                               max.depth=6, eta = 1, verbose=0,
+                               nround=5, nthread=4, 
+                               objective = "reg:linear")
+                
+                predictions <- predict(bst, as.matrix(dataTest[,predictors]), outputmargin=TRUE)
+                err <- rmse(dataTest[,outcomeName], predictions)
+                auc <- auc(dataTest[,outcomeName],predictions)
+                
+                lsErr <- c(lsErr, err)
+                lsAUC <- c(lsAUC, auc)
+                gc()
+        }
+        print(paste('Mean Error:',mean(lsErr)))
+        print(paste('Mean AUC:',mean(lsAUC)))
+}
+```
+# 1) Supprimer les dimensions à très faible variance
+```{R}
+##########################################################################################
+## Remove zero and close to zero variance
+##########################################################################################
+
+nzv <- nearZeroVar(gisetteRaw, saveMetrics = TRUE)
+range(nzv$percentUnique)
+
+head(nzv)
+
+# how many have no variation at all
+print(length(nzv[nzv$zeroVar==T,]))
+#  4 COLUMNS have NO VARIATION
+
+
+print(paste('Column count before cutoff:',ncol(gisetteRaw)))
+
+# how many have less than 0.1 percent variance
+dim(nzv[nzv$percentUnique > 0.1,])
+
+# remove zero & near-zero variance from original data set
+gisette_nzv <- gisetteRaw[c(rownames(nzv[nzv$percentUnique > 0.1,])) ]
+print(paste('Column count after cutoff:',ncol(gisette_nzv)))
+```
+# 2) construire un modele predictif de reference (xgboost, rapide sur grande dimensions et précis)
+```{R}
+dfEvaluate <- cbind(as.data.frame(sapply(gisette_nzv, as.numeric)),
+                    cluster=g_labels$V1)
+
+EvaluateAUC(dfEvaluate)
+```
+Les resultats : 
+"Mean Error: 0.503290785405663"
+"Mean AUC: 0.970094573718909"
+
+# 3) Analyse par composante principale
+```{R}
+pmatrix = scale(gisette_nzv)
+princ = prcomp(pmatrix)
+# très chronophage
+```
+
+# 4) Construction de modele à l'aide de la PREMIERE composante principale obtenue & mesure AUC
+```{R}
+head(dfComponents)
+```
+```{R}
+nComp <- 1  
+dfComponents <- predict(princ, newdata=pmatrix)[,1:nComp]
+
+dfEvaluate.1 <- cbind(as.data.frame(dfComponents),
+              cluster=g_labels$V1)
+
+EvaluateAUC(dfEvaluate.1)
+
+```
+Les resultats sont pas mal pour une seule variable contre 5000, 0.71 d'auc déjà !
+
+# 5) Construction de modele a l'aide des CINQ PREMIERES composantes principales & mesure AUC
+```{R}
+nComp <- 5
+dfComponents <- predict(princ, newdata=pmatrix)[,1:nComp]
+
+dfEvaluate.5 <- cbind(as.data.frame(dfComponents),
+              cluster=g_labels$V1)
+EvaluateAUC(dfEvaluate.5)
+
+#un peu choronophage.
+library(rmarkdown)
+render("acm.Rmd", "pdf_document")
+```
+
